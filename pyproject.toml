@@ -1,0 +1,12 @@
+[project]
+name = "gpso-crosswalks-20cm"
+version = "0.1.0"
+description = ""
+requires-python = ">=3.14"
+dependencies = [
+    "torch",
+    "numpy",
+    "pillow",
+    "scipy",
+    "transformers",
+]

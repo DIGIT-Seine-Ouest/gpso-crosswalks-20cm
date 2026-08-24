@@ -73,6 +73,25 @@ def hms(sec):
     return f"{int(sec)//3600:02d}:{int(sec)//60%60:02d}:{int(sec)%60:02d}"
 
 
+def save_history(path, args, source, device, amp, hist, acheve):
+    """Ecrit l'historique sur le disque.
+
+    Appele a chaque epoque, et non une seule fois a la fin : un entrainement
+    laisse tourner la nuit peut mourir a l'epoque 25 sur 30, et la courbe des
+    24 premieres a autant de valeur que le checkpoint. Le drapeau 'acheve' dit
+    si le run est alle au bout, pour qu'un historique tronque ne soit jamais lu
+    comme un resultat complet.
+    """
+    with open(path, "w") as f:
+        json.dump({"model": args.model, "recipe": args.recipe, "seed": args.seed,
+                   "source": source, "freeze_encoder": args.freeze_encoder,
+                   "device": device, "amp": amp, "acheve": acheve,
+                   "epoques_prevues": args.epochs, "epoques_faites": len(hist),
+                   "args": vars(args), "history": hist,
+                   "best_iou": max(h["iou"] for h in hist),
+                   "best_dice": max(h["dice"] for h in hist)}, f, indent=1)
+
+
 # ---------------------------------------------------------------------- main
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -203,14 +222,11 @@ def main(argv=None):
                           "device": device, "amp": amp, "args": vars(args)})
             torch.save(state, args.out)
 
+        save_history(args.history, args, source, device, amp, hist,
+                     acheve=(ep == args.epochs - 1))
+
     print(f"\nmeilleur IoU {best:.4f} (epoque "
           f"{max(hist, key=lambda h: h['iou'])['epoch']}) -> {args.out}")
-    with open(args.history, "w") as f:
-        json.dump({"model": args.model, "recipe": args.recipe, "seed": args.seed,
-                   "source": source, "freeze_encoder": args.freeze_encoder,
-                   "device": device, "amp": amp,
-                   "args": vars(args), "history": hist, "best_iou": best,
-                   "best_dice": max(h["dice"] for h in hist)}, f, indent=1)
     print(f"-> {args.history}")
 
 
