@@ -1,6 +1,9 @@
-# 05 — Génération des vignettes & structure finale de `tiles/`
+# 05 — Génération des vignettes & structure de `tiles/` (export du pilote)
 
-La dernière étape consiste à découper le raster géoréférencé et la couche de masques vectoriels nettoyée en vignettes régulières directement consommables par les dataloaders PyTorch / torchvision / transformers.
+> ⚠️ **Ce chapitre décrit l'export unique réalisé pour l'expérience pilote**, qui a produit les 582 tuiles de `tiles/`. Les tuiles s'y chevauchent à 50 % et le lot n'est pas découpé en volets : réparti après coup, il a produit la fuite spatiale de la [Phase 1](../03_phase_1_experience_pilote/02_decouverte_fuite_spatiale.md).
+> Le jeu de données exploité à partir de la Phase 2 est produit par le chapitre [`06`](06_decoupage_train_val_test.md), qui rejoue cet export **trois fois**, une par volet géographique. Le présent chapitre reste la référence des paramètres de tuilage, repris à l'identique.
+
+Cette étape découpe le raster géoréférencé et la couche de masques vectoriels nettoyée en vignettes régulières directement consommables par les dataloaders PyTorch / torchvision / transformers.
 
 ---
 
