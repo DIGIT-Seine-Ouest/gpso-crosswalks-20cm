@@ -23,7 +23,7 @@ import torch
 from matplotlib.patches import Patch
 from scipy import ndimage
 
-from . import config, dataset, models
+from . import config, dataset, device as devices, models
 
 GREEN, RED, BLUE = (0.13, 0.70, 0.29), (0.86, 0.15, 0.15), (0.15, 0.39, 0.92)
 
@@ -59,6 +59,8 @@ def parse_args(argv=None):
                          "sont des fragments de bord de tuile, dont l'IoU par tuile "
                          "est degenere.")
     ap.add_argument("--data-root", default=None)
+    ap.add_argument("--device", choices=list(devices.CHOIX), default=None,
+                    help="defaut : le plus rapide present (cuda > mps > cpu)")
     ap.add_argument("--split", default=None, help="HERITAGE : split.json du pilote")
     return ap.parse_args(argv)
 
@@ -71,7 +73,7 @@ def main(argv=None):
     args.metrics = args.metrics or os.path.join(run_dir, f"metrics_{args.subset}.json")
     os.makedirs(args.figdir, exist_ok=True)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = devices.pick(args.device)
     mean, std = models.normalization(args.model)
     loader = dataset.make_loader(args.subset, mean, std, batch_size=1, augment=False,
                                  shuffle=False, data_root=args.data_root,

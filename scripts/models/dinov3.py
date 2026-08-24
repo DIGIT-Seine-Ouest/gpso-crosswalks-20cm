@@ -7,6 +7,8 @@ sur 493 millions d'images satellite valent mieux qu'un encodeur reentraine sur
 
 Dependance : transformers.
 """
+import contextlib
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -80,7 +82,11 @@ class DinoV3Segmenter(SegModel):
         pourrait en avoir un nombre different.
         """
         g = x.shape[-1] // self.patch
-        with torch.autocast("cuda", dtype=torch.float16, enabled=x.is_cuda):
+        # Le backbone tourne en fp16 sur CUDA, ou la precision mixte est acquise.
+        # Ailleurs — MPS, CPU — on laisse la precision du tenseur d'entree : c'est
+        # la boucle d'entrainement qui decide, via scripts/device.py.
+        with (torch.autocast("cuda", dtype=torch.float16) if x.is_cuda
+              else contextlib.nullcontext()):
             lhs = self.backbone(pixel_values=x).last_hidden_state       # (B, L, C)
         n_special = lhs.shape[1] - g * g
         if n_special < 1:

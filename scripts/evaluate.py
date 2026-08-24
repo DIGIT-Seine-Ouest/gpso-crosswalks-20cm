@@ -17,7 +17,7 @@ import os
 
 import torch
 
-from . import config, dataset, metrics, models
+from . import config, dataset, device as devices, metrics, models
 
 
 def parse_args(argv=None):
@@ -32,6 +32,8 @@ def parse_args(argv=None):
                     help="volet a evaluer ; memes metriques pour les trois")
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--no-tta", action="store_true")
+    ap.add_argument("--device", choices=list(devices.CHOIX), default=None,
+                    help="defaut : le plus rapide present (cuda > mps > cpu)")
     ap.add_argument("--data-root", default=None)
     ap.add_argument("--split", default=None, help="HERITAGE : split.json du pilote")
     ap.add_argument("--out", default=None)
@@ -43,7 +45,7 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = devices.pick(args.device)
 
     run_dir = os.path.join(config.RUNS_DIR, args.model)
     os.makedirs(run_dir, exist_ok=True)

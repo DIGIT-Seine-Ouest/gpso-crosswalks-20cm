@@ -24,7 +24,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from . import config, dataset, metrics, models
+from . import config, dataset, device as devices, metrics, models
 
 
 # ---------------------------------------------------------------------- loss
@@ -95,7 +95,13 @@ def parse_args(argv=None):
     ap.add_argument("--freeze-encoder", action="store_true",
                     help="ablation : encodeur gele, seul le decodeur apprend")
     ap.add_argument("--workers", type=int, default=0)
-    ap.add_argument("--no-amp", action="store_true")
+    ap.add_argument("--device", choices=list(devices.CHOIX), default=None,
+                    help="defaut : le plus rapide present (cuda > mps > cpu)")
+    ap.add_argument("--no-amp", action="store_true",
+                    help="coupe la precision mixte la ou elle est active")
+    ap.add_argument("--amp", action="store_true",
+                    help="force la precision mixte fp16 sur mps, ou elle est "
+                         "facultative")
     ap.add_argument("--data-root", default=None,
                     help=f"racine contenant tiles_train/ val/ test/ (defaut {config.DATA_ROOT})")
     ap.add_argument("--split", default=None,
@@ -119,8 +125,8 @@ def main(argv=None):
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    amp = (device == "cuda") and not args.no_amp
+    device = devices.pick(args.device)
+    amp = devices.use_amp(device, args.no_amp, args.amp)
 
     # Les DataLoader sont construits avant le modele : la normalisation est
     # connue du registre sans avoir a telecharger le moindre poids.
@@ -139,11 +145,12 @@ def main(argv=None):
 
     loss_fn = build_loss(args.loss, args.pos_weight, device)
     opt, sched, step_on = build_optim(model, args.recipe, args.lr, args.epochs, len(dl_tr))
-    scaler = torch.amp.GradScaler("cuda", enabled=amp)
+    scaler = devices.grad_scaler(device, amp)
 
     source = os.path.basename(args.split) if args.split else "dossiers tiles_*"
     print(f"[data]  {len(dl_tr.dataset)} train / {len(dl_va.dataset)} val ({source})")
     print(f"[model] {model.describe()}")
+    print(f"[calc]  {devices.describe(device, amp)}")
     print(f"[optim] recette {args.recipe} | loss {args.loss} | lr {args.lr:.2e} "
           f"| {args.epochs} epoques | batch {args.batch_size} | seed {args.seed}\n")
     cols = ["epoch", "training loss", "validation loss", "accuracy", "Dice", "IoU", "time"]
@@ -156,7 +163,7 @@ def main(argv=None):
         tr_sum = n = 0
         for x, y in dl_tr:
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-            with torch.autocast("cuda", dtype=torch.float16, enabled=amp):
+            with devices.autocast(device, amp):
                 loss = loss_fn(model(x), y)
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
@@ -175,7 +182,7 @@ def main(argv=None):
         with torch.no_grad():
             for x, y in dl_va:
                 x, y = x.to(device), y.to(device)
-                with torch.autocast("cuda", dtype=torch.float16, enabled=amp):
+                with devices.autocast(device, amp):
                     logits = model(x)
                 va_sum += loss_fn(logits.float(), y).item() * x.size(0)
                 vn += x.size(0)
@@ -193,7 +200,7 @@ def main(argv=None):
             state = model.trainable_state_dict()
             state.update({"model_name": args.model, "epoch": ep,
                           "iou_crosswalk": m.iou, "dice_crosswalk": m.dice,
-                          "args": vars(args)})
+                          "device": device, "amp": amp, "args": vars(args)})
             torch.save(state, args.out)
 
     print(f"\nmeilleur IoU {best:.4f} (epoque "
@@ -201,6 +208,7 @@ def main(argv=None):
     with open(args.history, "w") as f:
         json.dump({"model": args.model, "recipe": args.recipe, "seed": args.seed,
                    "source": source, "freeze_encoder": args.freeze_encoder,
+                   "device": device, "amp": amp,
                    "args": vars(args), "history": hist, "best_iou": best,
                    "best_dice": max(h["dice"] for h in hist)}, f, indent=1)
     print(f"-> {args.history}")

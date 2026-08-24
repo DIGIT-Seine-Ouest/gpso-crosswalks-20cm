@@ -173,12 +173,18 @@ class SegEvaluator:
         }
 
 
-def run_eval(predict, loader, tta=True, device="cuda"):
+def run_eval(predict, loader, tta=True, device=None):
     """Evalue un modele sur un DataLoader.
 
     predict(x) -> probabilite de la classe passage pieton, de forme (B, H, W).
     C'est la seule chose que run_eval sait d'un modele.
+
+    device : par defaut le plus rapide present. Ne jamais coder "cuda" en dur
+    ici — l'appelant a deja place le modele, et un defaut errone ne se voit que
+    par une exception a la premiere tuile.
     """
+    from . import device as devices
+    device = device or devices.pick()
     ev = SegEvaluator()
     ev_tta = SegEvaluator() if tta else None
     with torch.no_grad():
