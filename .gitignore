@@ -217,3 +217,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 datasets/
+# MLflow : store d'experiences local, synchronise vers Hugging Face
+# (cf. scripts/mlruns_sync.py). Grossit a chaque run et n'a rien a faire
+# dans l'historique git.
+mlruns/
+mlartifacts/
+
+# Sorties d'entrainement : checkpoints, historiques, rapports, figures.
+runs/

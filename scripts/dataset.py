@@ -63,6 +63,37 @@ def _stem(path):
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def fingerprint(subset, data_root=None, split_json=None):
+    """Empreinte de la composition d'un volet : noms des tuiles et tailles des
+    fichiers, condensees en SHA-256.
+
+    Deux entrainements qui affichent la meme empreinte ont vu exactement les
+    memes octets. Un export refait, une tuile ecrasee par une homonyme, un
+    fichier tronque a mi-copie : l'empreinte change, et deux runs cessent d'etre
+    comparables sans qu'on ait a s'en apercevoir apres coup.
+
+    C'est peu couteux — une lecture de taille par fichier, pas de contenu — et
+    c'est ce que le tracage enregistre en parametre de chaque run.
+    """
+    import hashlib
+
+    if split_json:
+        stems = sorted(load_stems_from_split(split_json, subset))
+        root = config.LEGACY_TILES
+    else:
+        stems = load_stems(subset, data_root)
+        root = config.subset_dir(subset, data_root)
+
+    h = hashlib.sha256()
+    for stem in stems:
+        tailles = []
+        for kind in ("images", "labels"):
+            p = os.path.join(root, kind, f"{stem}.tif")
+            tailles.append(os.path.getsize(p) if os.path.exists(p) else -1)
+        h.update(f"{stem}:{tailles[0]}:{tailles[1]}\n".encode())
+    return h.hexdigest()
+
+
 class TileSet(Dataset):
     """Paires (image normalisee, masque entier) d'un volet.
 

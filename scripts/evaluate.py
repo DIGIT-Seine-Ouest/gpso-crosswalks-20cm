@@ -17,7 +17,7 @@ import os
 
 import torch
 
-from . import config, dataset, device as devices, metrics, models
+from . import config, dataset, device as devices, metrics, models, tracking
 
 
 def parse_args(argv=None):
@@ -37,6 +37,12 @@ def parse_args(argv=None):
     ap.add_argument("--data-root", default=None)
     ap.add_argument("--split", default=None, help="HERITAGE : split.json du pilote")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--track", action="store_true",
+                    help="trace l'evaluation dans MLflow, en run distinct de "
+                         "l'entrainement et tague par volet")
+    ap.add_argument("--experiment", default=tracking.EXPERIENCE)
+    ap.add_argument("--run-name", default=None,
+                    help="defaut : eval_{modele}_{volet}")
     args = ap.parse_args(argv)
     if not args.checkpoint and not args.weights:
         ap.error("il faut --checkpoint (entraine ici) ou --weights (poids externes)")
@@ -72,6 +78,22 @@ def main(argv=None):
     print(f"[eval] {model.describe()}"
           + (f" | checkpoint epoque {epoch}" if epoch is not None else ""))
 
+    run_name = args.run_name or f"eval_{args.model}_{args.subset}"
+    track = tracking.start(args.track, run_name=run_name, experience=args.experiment,
+                           tags={"modele": args.model, "volet": args.subset,
+                                 "type": "evaluation", "phase": "2"})
+    empreinte = dataset.fingerprint(args.subset, args.data_root, args.split)
+    track.log_params({
+        "model": args.model, "subset": args.subset, "device": device,
+        "tta": not args.no_tta, "batch_size": args.batch_size,
+        "checkpoint": os.path.basename(args.checkpoint) if args.checkpoint else None,
+        "weights": os.path.basename(args.weights) if args.weights else None,
+        "epoch": epoch, "n_tiles": len(loader.dataset),
+        f"empreinte_{args.subset}": empreinte[:16],
+    })
+    print(f"[track] {track.describe()}")
+    print(f"[eval]  empreinte {args.subset} {empreinte[:12]}")
+
     rep = metrics.run_eval(model.predict_proba, loader,
                            tta=not args.no_tta, device=device)
     rep.update({
@@ -94,6 +116,12 @@ def main(argv=None):
 
     with open(args.out, "w") as f:
         json.dump(rep, f, indent=1, ensure_ascii=False)
+
+    # aplatir : le rapport melange scores, notes en francais et listes ; seules
+    # les grandeurs numeriques sont des metriques.
+    track.log_metrics(tracking.aplatir(rep))
+    track.log_artifact(args.out)
+    track.finish()
     metrics.pretty(rep, f"{model.DESCRIPTION} — volet {args.subset} ({source})")
     if "reserve_fuite" in rep:
         print("\n!! " + rep["reserve_fuite"])

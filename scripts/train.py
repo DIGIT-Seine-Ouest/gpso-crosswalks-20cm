@@ -18,13 +18,14 @@ pas ouvert par ce script.
 import argparse
 import json
 import os
+import sys
 import time
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from . import config, dataset, device as devices, metrics, models
+from . import config, dataset, device as devices, metrics, models, tracking
 
 
 # ---------------------------------------------------------------------- loss
@@ -71,6 +72,63 @@ def build_optim(model, recipe, lr, epochs, steps_per_epoch):
 
 def hms(sec):
     return f"{int(sec)//3600:02d}:{int(sec)//60%60:02d}:{int(sec)%60:02d}"
+
+
+class Progression:
+    """Avancement d'une epoque, sur une seule ligne.
+
+    Une epoque de dinov3 dure une minute sur T4 et cinq sur un M3. Sans rien
+    afficher entre le debut et la fin, la seconde ressemble a un plantage — on
+    montre donc le lot courant, la perte glissante et le temps restant.
+
+    Deux rendus, choisis sur la nature de la sortie :
+
+      - terminal : la ligne se reecrit sur place, l'ecran ne defile pas ;
+      - fichier  : un run lance avec nohup n'a pas de retour chariot utile, les
+                   `\r` y produiraient une seule ligne de plusieurs kilo-octets.
+                   On y ecrit une ligne par quart d'epoque, et rien de plus.
+    """
+
+    def __init__(self, total, libelle, flux=None, intervalle=1.0):
+        self.total = max(int(total), 1)
+        self.libelle = libelle
+        self.flux = flux or sys.stdout
+        self.interactif = hasattr(self.flux, "isatty") and self.flux.isatty()
+        self.intervalle = intervalle
+        self.t0 = time.time()
+        self.dernier = 0.0
+        self.quart = 0
+        self.largeur = 0
+
+    def update(self, i, perte=None):
+        ecoule = time.time() - self.t0
+        texte = f"  {self.libelle} {i}/{self.total}"
+        if perte is not None:
+            texte += f" | loss {perte:.4f}"
+        if i:
+            texte += (f" | {ecoule / i:.2f} s/lot"
+                      f" | reste {hms((self.total - i) * ecoule / i)}")
+        self.largeur = max(self.largeur, len(texte))
+
+        if self.interactif:
+            maintenant = time.time()
+            if maintenant - self.dernier < self.intervalle and i < self.total:
+                return
+            self.dernier = maintenant
+            self.flux.write("\r" + texte.ljust(self.largeur))
+        else:
+            quart = 4 * i // self.total
+            if quart <= self.quart:
+                return
+            self.quart = quart
+            self.flux.write(texte + "\n")
+        self.flux.flush()
+
+    def close(self):
+        """Efface la ligne pour que la ligne de resultat prenne sa place."""
+        if self.interactif and self.largeur:
+            self.flux.write("\r" + " " * self.largeur + "\r")
+            self.flux.flush()
 
 
 def save_history(path, args, source, device, amp, hist, acheve):
@@ -128,6 +186,16 @@ def parse_args(argv=None):
                          "fuit. Ne produit pas un resultat publiable.")
     ap.add_argument("--out", default=None)
     ap.add_argument("--history", default=None)
+    ap.add_argument("--track", action="store_true",
+                    help="trace le run dans MLflow ; sans le flag, ou sans mlflow "
+                         "installe, le tracage est muet et l'entrainement identique")
+    ap.add_argument("--experiment", default=tracking.EXPERIENCE,
+                    help=f"nom d'experience MLflow (defaut {tracking.EXPERIENCE})")
+    ap.add_argument("--run-name", default=None,
+                    help="defaut : {modele}_{recette}_seed{graine}")
+    ap.add_argument("--log-checkpoint", action="store_true",
+                    help="joint le checkpoint aux artefacts du run ; leger pour "
+                         "dinov3 (tete seule), lourd pour un U-Net entier")
     return ap.parse_args(argv)
 
 
@@ -146,6 +214,11 @@ def main(argv=None):
     np.random.seed(args.seed)
     device = devices.pick(args.device)
     amp = devices.use_amp(device, args.no_amp, args.amp)
+
+    run_name = args.run_name or f"{args.model}_{args.recipe}_seed{args.seed}"
+    track = tracking.start(args.track, run_name=run_name, experience=args.experiment,
+                           tags={"modele": args.model, "recette": args.recipe,
+                                 "graine": str(args.seed), "phase": "2"})
 
     # Les DataLoader sont construits avant le modele : la normalisation est
     # connue du registre sans avoir a telecharger le moindre poids.
@@ -167,63 +240,117 @@ def main(argv=None):
     scaler = devices.grad_scaler(device, amp)
 
     source = os.path.basename(args.split) if args.split else "dossiers tiles_*"
+
+    # Empreintes des volets : deux runs aux memes hyperparametres mais aux
+    # empreintes differentes n'ont pas vu les memes donnees, et ne se comparent
+    # pas. C'est le parametre qui aurait revele les 23 tuiles ecrasees a
+    # l'export (cf. datasets/README.md).
+    empreintes = {v: dataset.fingerprint(v, args.data_root, args.split)
+                  for v in ("train", "val")}
+
+    track.log_params({
+        **{k: v for k, v in vars(args).items() if k not in ("track", "run_name")},
+        "device": device, "amp": amp,
+        "n_train": len(dl_tr.dataset), "n_val": len(dl_va.dataset),
+        "source": source,
+        "empreinte_train": empreintes["train"][:16],
+        "empreinte_val": empreintes["val"][:16],
+        "parametres_entraines": sum(p.numel() for p in model.trainable_parameters()),
+        "parametres_totaux": sum(p.numel() for p in model.parameters()),
+    })
+
     print(f"[data]  {len(dl_tr.dataset)} train / {len(dl_va.dataset)} val ({source})")
+    print(f"[data]  empreintes train {empreintes['train'][:12]} / "
+          f"val {empreintes['val'][:12]}")
     print(f"[model] {model.describe()}")
     print(f"[calc]  {devices.describe(device, amp)}")
+    print(f"[track] {track.describe()}")
     print(f"[optim] recette {args.recipe} | loss {args.loss} | lr {args.lr:.2e} "
           f"| {args.epochs} epoques | batch {args.batch_size} | seed {args.seed}\n")
     cols = ["epoch", "training loss", "validation loss", "accuracy", "Dice", "IoU", "time"]
     print("".join(c.ljust(21) for c in cols))
 
-    best, hist = -1.0, []
-    for ep in range(args.epochs):
-        t0 = time.time()
-        model.train()
-        tr_sum = n = 0
-        for x, y in dl_tr:
-            x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-            with devices.autocast(device, amp):
-                loss = loss_fn(model(x), y)
-            opt.zero_grad(set_to_none=True)
-            scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
-            if step_on == "step":
-                sched.step()
-            tr_sum += loss.item() * x.size(0)
-            n += x.size(0)
-        if step_on == "epoch":
-            sched.step()
-
-        model.eval()
-        m = metrics.RunningSeg()
-        va_sum = vn = 0
-        with torch.no_grad():
-            for x, y in dl_va:
-                x, y = x.to(device), y.to(device)
+    best, hist, statut = -1.0, [], "FINISHED"
+    try:
+        for ep in range(args.epochs):
+            t0 = time.time()
+            model.train()
+            tr_sum = n = 0
+            prog = Progression(len(dl_tr), f"epoque {ep} train")
+            for i, (x, y) in enumerate(dl_tr, 1):
+                x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
                 with devices.autocast(device, amp):
-                    logits = model(x)
-                va_sum += loss_fn(logits.float(), y).item() * x.size(0)
-                vn += x.size(0)
-                m.update(logits.argmax(1), y)
+                    loss = loss_fn(model(x), y)
+                opt.zero_grad(set_to_none=True)
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
+                if step_on == "step":
+                    sched.step()
+                tr_sum += loss.item() * x.size(0)
+                n += x.size(0)
+                prog.update(i, perte=tr_sum / n)
+            prog.close()
+            if step_on == "epoch":
+                sched.step()
 
-        row = [str(ep), str(tr_sum / n), str(va_sum / vn), str(m.accuracy),
-               str(m.dice), str(m.iou), hms(time.time() - t0)]
-        print("".join(c.ljust(21) for c in row), flush=True)
-        hist.append({"epoch": ep, "train_loss": tr_sum / n, "valid_loss": va_sum / vn,
-                     "accuracy": m.accuracy, "dice": m.dice, "iou": m.iou})
+            model.eval()
+            m = metrics.RunningSeg()
+            va_sum = vn = 0
+            prog = Progression(len(dl_va), f"epoque {ep} val")
+            with torch.no_grad():
+                for i, (x, y) in enumerate(dl_va, 1):
+                    x, y = x.to(device), y.to(device)
+                    with devices.autocast(device, amp):
+                        logits = model(x)
+                    va_sum += loss_fn(logits.float(), y).item() * x.size(0)
+                    vn += x.size(0)
+                    m.update(logits.argmax(1), y)
+                    prog.update(i, perte=va_sum / vn)
+            prog.close()
 
-        # Selection sur le volet val. Le volet test n'est jamais ouvert ici.
-        if m.iou > best:
-            best = m.iou
-            state = model.trainable_state_dict()
-            state.update({"model_name": args.model, "epoch": ep,
-                          "iou_crosswalk": m.iou, "dice_crosswalk": m.dice,
-                          "device": device, "amp": amp, "args": vars(args)})
-            torch.save(state, args.out)
+            row = [str(ep), str(tr_sum / n), str(va_sum / vn), str(m.accuracy),
+                   str(m.dice), str(m.iou), hms(time.time() - t0)]
+            print("".join(c.ljust(21) for c in row), flush=True)
+            hist.append({"epoch": ep, "train_loss": tr_sum / n, "valid_loss": va_sum / vn,
+                         "accuracy": m.accuracy, "dice": m.dice, "iou": m.iou})
 
-        save_history(args.history, args, source, device, amp, hist,
-                     acheve=(ep == args.epochs - 1))
+            # Selection sur le volet val. Le volet test n'est jamais ouvert ici.
+            if m.iou > best:
+                best = m.iou
+                state = model.trainable_state_dict()
+                state.update({"model_name": args.model, "epoch": ep,
+                              "iou_crosswalk": m.iou, "dice_crosswalk": m.dice,
+                              "device": device, "amp": amp, "args": vars(args)})
+                torch.save(state, args.out)
+
+            track.log_metrics({"train_loss": tr_sum / n, "valid_loss": va_sum / vn,
+                               "accuracy": m.accuracy, "dice": m.dice, "iou": m.iou,
+                               "secondes_epoque": time.time() - t0}, step=ep)
+            save_history(args.history, args, source, device, amp, hist,
+                         acheve=(ep == args.epochs - 1))
+
+    except KeyboardInterrupt:
+        # Un run de nuit interrompu doit laisser un resultat exploitable :
+        # l'historique et le meilleur checkpoint sont deja sur le disque.
+        statut = "KILLED"
+        print(f"\n[train] interrompu apres {len(hist)} epoque(s)", flush=True)
+    except Exception:
+        statut = "FAILED"
+        raise
+    finally:
+        if hist:
+            track.log_metrics({"best_iou": best,
+                               "best_epoch": max(hist, key=lambda h: h["iou"])["epoch"],
+                               "epoques_faites": len(hist)})
+            track.log_artifact(args.history)
+            if args.log_checkpoint:
+                track.log_artifact(args.out)
+        track.finish(statut)
+
+    if not hist:
+        print("\n[train] aucune epoque achevee, rien a rapporter.")
+        return
 
     print(f"\nmeilleur IoU {best:.4f} (epoque "
           f"{max(hist, key=lambda h: h['iou'])['epoch']}) -> {args.out}")

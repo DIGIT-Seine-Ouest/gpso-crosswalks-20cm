@@ -10,3 +10,13 @@ dependencies = [
     "scipy",
     "transformers",
 ]
+
+# Tracage des experiences. Volontairement optionnel : train.py et evaluate.py
+# tournent a l'identique sans, le tracage devient simplement muet. Un Colab
+# minimal n'a donc rien de plus a installer.
+#   uv sync --extra tracking
+[project.optional-dependencies]
+tracking = [
+    "mlflow",
+    "huggingface-hub",
+]

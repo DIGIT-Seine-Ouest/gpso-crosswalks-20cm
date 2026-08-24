@@ -47,6 +47,12 @@ def subset_dir(subset, data_root=None):
     return os.path.join(data_root or DATA_ROOT, SUBSET_DIRS[subset])
 
 
-# Sorties d'entrainement : checkpoints, historiques, rapports d'evaluation.
-# Hors du paquet, pour que scripts/ ne contienne que du code.
-RUNS_DIR = os.environ.get("GPSO_RUNS", os.path.join(REPO, "runs"))
+# Sorties d'entrainement : checkpoints, historiques, rapports d'evaluation, et
+# store MLflow. Elles vivent sous DATA_ROOT, qui est le miroir local du bucket
+# Hugging Face : un seul dossier synchronise porte les entrees et les sorties,
+# et passer du Mac a Colab ne demande qu'un `python -m scripts.hf_sync pull`.
+RUNS_DIR = os.environ.get("GPSO_RUNS", os.path.join(DATA_ROOT, "runs"))
+MLRUNS_DIR = os.environ.get("GPSO_MLRUNS", os.path.join(DATA_ROOT, "mlruns"))
+
+#: bucket de reference, cible par defaut de scripts/hf_sync.py
+BUCKET = os.environ.get("GPSO_BUCKET", "mandresyandri/gpso-crosswalks-20cm")
