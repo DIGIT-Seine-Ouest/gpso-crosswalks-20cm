@@ -1,53 +1,154 @@
-# scripts/ — références d'entraînement et d'évaluation
+# `scripts/` — entrainement, evaluation, figures
 
-Scripts repris de l'expérience pilote et conservés ici comme **base d'inspiration** pour
-la phase 2. Ils n'ont pas été réécrits : c'est le code tel qu'il a produit les résultats
-du `RESULTATS.md` de l'archive. Le reste du pilote (poids, métriques, figures, journal)
-est archivé dans `legacy.zip` à la racine.
+Paquet Python du depot. Un principe : **aucun module transverse ne connait un
+modele en particulier**. Ajouter une architecture ne demande de toucher ni a
+`train.py`, ni a `evaluate.py`, ni a `visualize.py`.
 
 ```
 scripts/
-├── eval_common.py          <- Socle d'évaluation partagé (métriques objet, TTA, dataset)
-├── dinov3/
-│   ├── train_dinov3.py     <- Entraînement de la tête sur DINOv3 ViT-L/16 SAT-493M gelé
-│   ├── evaluate.py         <- Évaluation d'un checkpoint via eval_common
-│   ├── train_dino_compare.py  <- Variantes d'entraînement pour l'ablation
-│   └── visualize.py        <- Figures qualitatives et cartes d'erreurs
-└── resnet_unet/
-    ├── train_unet.py       <- Baseline U-Net ResNet34 (recettes « protocole » et « arcgis »)
-    └── evaluate_unet.py    <- Évaluation de la baseline via eval_common
+├── config.py        chemins, normalisations, geometrie des tuiles
+├── dataset.py       lecture des tuiles et des masques, augmentation D4
+├── metrics.py       metriques pixel et objet, TTA D4, rapport
+├── models/
+│   ├── base.py      SegModel : le contrat que respecte toute architecture
+│   ├── __init__.py  registre, import differe des dependances
+│   ├── dinov3.py    ViT-L/16 SAT-493M gele + tete conv
+│   └── unet.py      U-Net a encodeur ResNet (34, 50, ...)
+├── train.py         point d'entree unique  --model
+├── evaluate.py      point d'entree unique  --model
+└── visualize.py     point d'entree unique  --model
 ```
 
-## Résolution des chemins
+## Utilisation
 
-`eval_common.py` et `train_dinov3.py` déduisent la racine du dépôt de leur propre
-emplacement. Placés ici, ils pointent correctement sur `tiles/` — c'était cassé dans
-`legacy/models/` depuis l'archivage.
-
-En revanche le **split par défaut** (`split.json` à la racine) n'existe pas : les splits
-sont dans `legacy.zip`. Il faut les extraire une fois, puis les passer explicitement.
+Les points d'entree se lancent comme des modules, depuis la racine du depot :
 
 ```bash
-# Extraction du split spatialement disjoint (11 Ko)
-unzip -j legacy.zip 'legacy/split_v2.json' -d .
-
-# Entraînement DINOv3
-python scripts/dinov3/train_dinov3.py --split split_v2.json --epochs 30
-
-# Baseline U-Net
-python scripts/resnet_unet/train_unet.py --split split_v2.json --epochs 30
-
-# Évaluation d'un checkpoint archivé (à extraire lui aussi de legacy.zip)
-unzip -j legacy.zip 'legacy/models/dinov3/best_dinov3_head.pt' -d .
-python scripts/dinov3/evaluate.py --split split_v2.json \
-    --checkpoint best_dinov3_head.pt --subset test
+python -m scripts.train    --model dinov3
+python -m scripts.evaluate --model dinov3 --checkpoint runs/dinov3/seed0.pt
+python -m scripts.visualize --model dinov3 --checkpoint runs/dinov3/seed0.pt
 ```
 
-Deux variables d'environnement court-circuitent ces défauts : `GPSO_TILES` et `GPSO_SPLIT`.
+Les trois graines du protocole multi-seed :
 
-## Ce qui n'a pas été copié
+```bash
+for s in 0 1 2; do python -m scripts.train --model dinov3        --seed $s; done
+for s in 0 1 2; do python -m scripts.train --model unet-resnet34 --seed $s; done
+```
 
-Les **poids** (`best_dinov3_head.pt`, `resnet_unet.pth`, `.dlpk`), les **métriques** et les
-**figures** sont dans `legacy.zip`. Idem pour les scripts transverses `benchmark.py`,
-`compare_models.py` et `make_split.py`, qui n'appartiennent à aucun des deux modèles en
-propre. Pour explorer l'archive : `unzip -l legacy.zip`.
+Evaluation finale sur le volet test, **une seule fois**, apres que la meilleure
+epoque a ete choisie sur val :
+
+```bash
+python -m scripts.evaluate --model dinov3 --checkpoint runs/dinov3/seed0.pt --subset test
+```
+
+Baseline ArcGIS, dont les poids existent mais pas le decoupage :
+
+```bash
+python -m scripts.evaluate --model unet-resnet34 --weights resnet_unet.pth
+```
+
+Le rapport porte alors une reserve explicite : ces poids ont ete entraines par
+ArcGIS sur son propre decoupage aleatoire, inconnu, et leur score n'est pas
+comparable a celui d'un modele entraine ici.
+
+## Ou sont les donnees
+
+Le decoupage train / val / test est **spatial et fige a l'export** : un dossier
+par volet, produit par le chapitre
+[`06`](../cahier_recherche/02_acquisition_de_donnees/06_decoupage_train_val_test.md)
+du cahier de recherche. Il n'y a pas de fichier de split a charger.
+
+```
+datasets/
+├── tiles_train/    397 tuiles — Boulogne-Billancourt + Sevres
+├── tiles_val/       88 tuiles — Meudon-sur-Seine
+└── tiles_test/     101 tuiles — Vanves
+```
+
+Chaque dossier contient `images/` et `labels/`. Trois variables d'environnement
+deplacent les chemins par defaut : `GPSO_DATA` (racine des jeux), `GPSO_TILES`
+(jeu du pilote), `GPSO_RUNS` (sorties).
+
+L'option `--split` charge un `split.json` a l'ancienne, sur le jeu unique du
+pilote. Elle ne sert qu'a rejouer la Phase 1, dont le decoupage aleatoire
+fuyait : elle ne produit pas un resultat publiable.
+
+## Ajouter une architecture
+
+Deux etapes, et rien d'autre dans le depot.
+
+**1.** Un module `models/mon_modele.py` qui expose une constante `NORMALIZATION`
+et une fonction `build(**kwargs)` renvoyant une instance de `SegModel` :
+
+```python
+from .. import config
+from .base import SegModel
+
+NORMALIZATION = config.IMAGENET
+
+class MonModele(SegModel):
+    NAME = "mon-modele"
+    DESCRIPTION = "..."
+    NORMALIZATION = NORMALIZATION
+    DEFAULT_LR = 1e-4
+
+    def forward(self, x):
+        ...   # (B, 3, H, W) -> logits (B, 2, H, W), classe 1 = passage pieton
+
+def build(**kwargs):
+    return MonModele(**kwargs)
+```
+
+**2.** Une ligne dans `_REGISTRY`, dans `models/__init__.py`.
+
+Le contrat `SegModel` tient en quatre points, dont trois ont un comportement par
+defaut utilisable tel quel :
+
+| Membre | Role | Defaut |
+|---|---|---|
+| `forward(x)` | logits `(B, 2, H, W)` | a ecrire |
+| `NORMALIZATION` | pretraitement d'entree du pre-entrainement | ImageNet |
+| `trainable_parameters()` | ce que voit l'optimiseur | tout ce qui a `requires_grad` |
+| `trainable_state_dict()` | ce qu'on sauvegarde | le modele entier |
+
+Un backbone gele redefinit les deux derniers, pour ne pas ecrire des centaines
+de mega-octets de poids figes a chaque epoque : `dinov3.py` en donne l'exemple.
+
+Un U-Net a encodeur ResNet50 est deja declare (`--model unet-resnet50`) : il
+reutilise `models/unet.py` avec un autre encodeur, sans une ligne de code
+supplementaire.
+
+## Ce qui doit rester identique entre modeles
+
+C'est la condition pour qu'un ecart dans le tableau comparatif vienne des
+modeles et non du protocole. Ces elements vivent dans les modules transverses,
+hors d'atteinte d'une architecture :
+
+- les tuiles et le decoupage spatial (`dataset.py`) ;
+- l'augmentation D4, les 8 symetries du carre (`dataset.py`) ;
+- la loss, le nombre d'epoques, la selection du checkpoint sur val (`train.py`) ;
+- toutes les metriques (`metrics.py`).
+
+Trois choses restent legitimement propres a chaque modele, parce que les imposer
+fausserait la comparaison plutot que de la garantir : la normalisation d'entree
+(chaque reseau recoit le pretraitement de son pre-entrainement), le taux
+d'apprentissage par defaut, et les groupes de parametres pour les taux
+discriminants.
+
+## Recettes d'entrainement
+
+| `--recipe` | Optimiseur | Loss | Usage |
+|---|---|---|---|
+| `protocole` *(defaut)* | AdamW + CosineAnnealingLR, un seul lr | 0,5 CE ponderee + 0,5 Dice | la recette de reference, celle qui rend les modeles comparables |
+| `arcgis` | AdamW + OneCycleLR, lr discriminants entre `lr/10` et `lr` | CrossEntropy nue | reconstitution de la recette ArcGIS, pour verifier qu'on retombe sur la baseline |
+
+## Note sur les masques
+
+Les masques de `labels/` sont ecrits par ArcGIS en **entiers non signes sur
+16 bits**, alors que les images sont en 8 bits sur trois bandes. Les valeurs
+utiles restent `{0, 1}`. Un lecteur qui suppose du 8 bits partout obtient un
+masque etire d'un facteur 2 et decale, **sans lever la moindre exception** —
+`dataset.TileSet` verifie donc les valeurs a la premiere lecture et s'arrete net
+si elles sortent de `{0, 1}`.

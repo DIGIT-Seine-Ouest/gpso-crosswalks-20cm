@@ -1,70 +1,67 @@
-"""
-Socle d'evaluation partage par tous les modeles du depot.
+"""Metriques de segmentation, communes a tous les modeles.
 
-Le but est qu'un seul code calcule les metriques, quel que soit le modele : un ecart
-entre deux lignes du tableau comparatif vient alors des modeles, jamais de la mesure.
+Un seul code calcule les scores, quelle que soit l'architecture : un ecart entre
+deux lignes du tableau comparatif vient alors des modeles, jamais de la mesure.
 
-Chaque modele fournit seulement une fonction predict(x) -> probabilite de la classe
-positive, de forme (B, H, W), et la normalisation qu'il attend en entree.
+Deux niveaux, correspondant au cadrage du cahier de recherche (chapitre 01) :
+
+  - pixel  : IoU, Dice, precision, rappel. Metriques d'optimisation du reseau,
+             utilisees pour choisir l'epoque du checkpoint.
+  - objet  : taux de detection a 50 % de couverture. Metrique metier, celle qui
+             dit combien de passages pietons du terrain ont ete retrouves.
+
+L'accuracy globale n'est calculee que pour etre mise en regard de la baseline
+tout-fond : sur une classe representant 0,67 % des pixels, elle ne discrimine
+rien et n'est publiee qu'a ce titre.
+
+Toutes les grandeurs sont accumulees sur l'ensemble du volet, jamais moyennees
+par batch : intersection et union sont sommees globalement.
 """
-import json, os
 import numpy as np
 import torch
-from PIL import Image
 from scipy import ndimage
-from torch.utils.data import Dataset, DataLoader
-
-REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-TILES = os.environ.get("GPSO_TILES", os.path.join(REPO, "tiles"))
-SPLIT = os.environ.get("GPSO_SPLIT", os.path.join(REPO, "split.json"))
-
-IMAGENET = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-SAT493M  = ((0.430, 0.411, 0.296), (0.213, 0.156, 0.143))
 
 
-def load_split(path=None):
-    path = path or SPLIT
-    with open(path) as f:
-        s = json.load(f)
-    return s["train"], s["val"]
+class RunningSeg:
+    """Accuracy, Dice et IoU agreges, pour le suivi epoque par epoque.
 
+    Volontairement leger : appele a chaque epoque d'entrainement, il ne fait
+    aucune analyse morphologique. Le rapport complet est produit par
+    SegEvaluator, une seule fois, en fin de course.
+    """
 
-def load_subset(path=None, name="val"):
-    """Retourne un sous-ensemble nomme du split : train, val, ou test s'il existe.
+    def __init__(self):
+        self.inter = self.pred_pos = self.targ_pos = self.correct = self.total = 0
 
-    Permet d'appliquer exactement les memes metriques aux trois volets, ce qui est
-    la condition pour comparer honnetement deux entrainements."""
-    path = path or SPLIT
-    with open(path) as f:
-        s = json.load(f)
-    if name not in s or not isinstance(s[name], list):
-        dispo = [k for k, v in s.items() if isinstance(v, list)]
-        raise SystemExit(f"'{name}' absent de {os.path.basename(path)} ; disponibles : {dispo}")
-    return s[name]
+    def update(self, pred, targ):
+        p, t = pred == 1, targ == 1
+        self.inter += (p & t).sum().item()
+        self.pred_pos += p.sum().item()
+        self.targ_pos += t.sum().item()
+        self.correct += (pred == targ).sum().item()
+        self.total += targ.numel()
 
+    @property
+    def accuracy(self):
+        return self.correct / self.total if self.total else float("nan")
 
-class TilesEval(Dataset):
-    """Lecture deterministe, sans augmentation. La normalisation est propre au modele."""
+    @property
+    def dice(self):
+        d = self.pred_pos + self.targ_pos
+        return 2 * self.inter / d if d else float("nan")
 
-    def __init__(self, stems, mean, std, root=None):
-        self.stems, self.root = stems, root or TILES
-        self.mean = np.asarray(mean, np.float32).reshape(3, 1, 1)
-        self.std = np.asarray(std, np.float32).reshape(3, 1, 1)
-
-    def __len__(self):
-        return len(self.stems)
-
-    def __getitem__(self, i):
-        s = self.stems[i]
-        img = np.array(Image.open(f"{self.root}/images/{s}.tif").convert("RGB"))
-        msk = np.array(Image.open(f"{self.root}/labels/{s}.tif"))
-        img = np.ascontiguousarray(img.transpose(2, 0, 1), np.float32) / 255.0
-        img = (img - self.mean) / self.std
-        return torch.from_numpy(img), torch.from_numpy(np.ascontiguousarray(msk).astype(np.int64))
+    @property
+    def iou(self):
+        u = self.pred_pos + self.targ_pos - self.inter
+        return self.inter / u if u else float("nan")
 
 
 def d4_tta(predict, x):
-    """Moyenne des probabilites sur les 8 symetries du carre."""
+    """Moyenne des probabilites sur les 8 symetries du carre.
+
+    Une orthophoto n'ayant pas d'orientation privilegiee, moyenner les huit
+    predictions stabilise le resultat sans rien changer au modele.
+    """
     acc = 0
     for k in range(4):
         xr = torch.rot90(x, k, (2, 3))
@@ -78,8 +75,7 @@ def d4_tta(predict, x):
 
 
 class SegEvaluator:
-    """Accumule les compteurs sur tout le set. Rien n'est moyenne par batch :
-    intersection et union sont sommees globalement, comme la metrique Dice de fastai."""
+    """Rapport complet sur un volet : pixel, objet, decomposition des erreurs."""
 
     def __init__(self, thresholds=None, main=0.5):
         self.ths = [round(float(t), 2) for t in (thresholds if thresholds is not None
@@ -155,6 +151,9 @@ class SegEvaluator:
                 "total": self.comp_tot,
                 "taux_detection": self.comp_hit / self.comp_tot if self.comp_tot else float("nan"),
                 "manques": self.comp_tot - self.comp_hit,
+                "note": ("comptage par tuile : un passage pieton visible sur plusieurs "
+                         "tuiles chevauchantes est compte plusieurs fois. Le comptage "
+                         "par objet du terrain demande le recollage en Lambert-93."),
             },
             "iou_par_tuile": {
                 "mediane": float(np.median(pt_iou)),
@@ -174,14 +173,16 @@ class SegEvaluator:
         }
 
 
-def run_eval(predict, stems, mean, std, batch_size=2, tta=True, root=None, device="cuda"):
-    """Evalue un modele sur `stems`. predict(x) -> proba classe positive (B, H, W)."""
-    dl = DataLoader(TilesEval(stems, mean, std, root), batch_size=batch_size,
-                    shuffle=False, num_workers=0)
+def run_eval(predict, loader, tta=True, device="cuda"):
+    """Evalue un modele sur un DataLoader.
+
+    predict(x) -> probabilite de la classe passage pieton, de forme (B, H, W).
+    C'est la seule chose que run_eval sait d'un modele.
+    """
     ev = SegEvaluator()
     ev_tta = SegEvaluator() if tta else None
     with torch.no_grad():
-        for x, y in dl:
+        for x, y in loader:
             x, y = x.to(device), y.to(device)
             gt = (y == 1)
             ev.update(predict(x), gt)
@@ -195,12 +196,14 @@ def run_eval(predict, stems, mean, std, batch_size=2, tta=True, root=None, devic
             "meilleur_seuil": t["meilleur_seuil"]["seuil"],
             "iou_meilleur_seuil": t["meilleur_seuil"]["iou"],
             "dice_f1": t["pixel"]["dice_f1_crosswalk"],
+            "taux_detection": t["objet"]["taux_detection"],
             "note": "moyenne des probabilites sur les 8 symetries du carre",
         }
     return rep
 
 
 def pretty(rep, titre):
+    """Rendu console d'un rapport."""
     p, o, d = rep["pixel"], rep["objet"], rep["decomposition_erreurs"]
     lo, hi = p["iou_crosswalk_ci95"]
     print(f"\n--- {titre} ---")
@@ -209,10 +212,13 @@ def pretty(rep, titre):
     print(f"Dice / F1            {p['dice_f1_crosswalk']:.4f}")
     print(f"Precision            {p['precision_crosswalk']:.4f}")
     print(f"Rappel               {p['recall_crosswalk']:.4f}")
-    print(f"Accuracy globale     {p['accuracy_global']:.4f}  (tout-fond = {p['accuracy_baseline_tout_fond']:.4f})")
-    print(f"Detection objet      {o['detectes_couverture_50pct']}/{o['total']} = {o['taux_detection']*100:.1f}%")
+    print(f"Accuracy globale     {p['accuracy_global']:.4f}  "
+          f"(tout-fond = {p['accuracy_baseline_tout_fond']:.4f})")
+    print(f"Detection objet      {o['detectes_couverture_50pct']}/{o['total']} = "
+          f"{o['taux_detection']*100:.1f}%")
     print(f"Erreurs au contour   {d['part_contour_pct']:.1f}% des {d['total_px']} px errones")
-    print(f"Meilleur seuil       {rep['meilleur_seuil']['seuil']} -> IoU {rep['meilleur_seuil']['iou']:.4f}")
+    print(f"Meilleur seuil       {rep['meilleur_seuil']['seuil']} -> "
+          f"IoU {rep['meilleur_seuil']['iou']:.4f}")
     if "tta_d4" in rep:
         t = rep["tta_d4"]
         print(f"TTA D4               IoU {t['iou_seuil_0.5']:.4f} a 0.5 | "
