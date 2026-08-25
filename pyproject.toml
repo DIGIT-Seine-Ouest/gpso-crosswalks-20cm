@@ -20,3 +20,7 @@ tracking = [
     "mlflow",
     "huggingface-hub",
 ]
+unet = [
+    "fastai>=2.8.8",
+    "torchvision>=0.28.0",
+]
