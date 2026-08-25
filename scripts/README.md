@@ -48,7 +48,24 @@ python -m scripts.evaluate  --model dinov3 --checkpoint datasets/runs/dinov3/see
 python -m scripts.visualize --model dinov3 --checkpoint datasets/runs/dinov3/seed0.pt
 ```
 
-Architectures disponibles : `dinov3`, `unet-resnet34`, `unet-resnet50`.
+Architectures disponibles : `dinov3`, `dinov3-dpt`, `dinov3-dpt128`,
+`unet-resnet34`, `unet-resnet50`.
+
+Les deux premieres partagent le meme backbone gele et ne different que par leur
+tete. `dinov3` la garde minimale — deux convolutions, un upsampling bilineaire
+x16 depuis la grille 32x32 — pour que le score mesure les representations du
+backbone. `dinov3-dpt` lui substitue une tete DPT : quatre prises aux blocs 6,
+12, 18 et 24, reassemblees a quatre resolutions puis fusionnees en remontant par
+paliers de x2. Elle existe pour trancher une hypothese ecrite dans le bilan de
+la premiere : sa precision plus faible viendrait de la grille de patchs 16 px,
+pas de la semantique du backbone.
+
+`dinov3-dpt128` est la meme tete a 128 canaux de fusion au lieu de 256 : 19,8 M
+de parametres entrainables contre 29,5 M, et une heure de moins par run. C'est
+la variante a lancer en premier — 29,5 M de parametres appris sur 374 tuiles est
+un decodeur plus lourd que le U-Net entier, et le surapprentissage du decodeur
+est le premier risque de cette architecture. Si la tete a 128 ne decolle pas,
+celle a 256 ne sauvera rien.
 
 ### Options de `train.py`
 
@@ -58,7 +75,7 @@ Architectures disponibles : `dinov3`, `unet-resnet34`, `unet-resnet50`.
 | `--seed` | `0` | relancer avec 0, 1, 2 donne la dispersion |
 | `--epochs` | `30` | |
 | `--batch-size` | `2` | **ne pas changer** entre modeles compares |
-| `--lr` | celui du modele | `1e-3` pour dinov3, `1e-4` pour un U-Net |
+| `--lr` | celui du modele | `1e-3` dinov3, `3e-4` dinov3-dpt, `1e-4` un U-Net |
 | `--recipe` | `protocole` | ou `arcgis`, cf. plus bas |
 | `--device` | le plus rapide present | `cuda`, `mps` ou `cpu` |
 | `--amp` / `--no-amp` | fp16 sur cuda | force ou coupe la precision mixte |
@@ -74,6 +91,7 @@ epoque** — un run interrompu laisse un resultat exploitable).
 
 ```bash
 for s in 0 1 2; do python -m scripts.train --model dinov3        --seed $s --track; done
+for s in 0 1 2; do python -m scripts.train --model dinov3-dpt    --seed $s --track; done
 for s in 0 1 2; do python -m scripts.train --model unet-resnet34 --seed $s --track; done
 ```
 
@@ -113,6 +131,18 @@ torch ; le `GradScaler`, propre a CUDA, y est desactive.
 Le peripherique ne change ni les tuiles, ni la loss, ni les metriques : **un IoU
 obtenu sur MPS et un IoU obtenu sur T4 se comparent. Les temps par epoque, non.**
 D'ou l'enregistrement du peripherique dans le checkpoint et l'historique.
+
+Ordres de grandeur mesures sur `mps`, batch 2, 512x512, pour 187 pas
+d'entrainement et 44 forwards de validation par epoque :
+
+| | par pas | par epoque | 30 epoques |
+|---|---|---|---|
+| `dinov3` (tete conv) | 1,96 s | ~7,6 min | ~3 h 50 |
+| `dinov3-dpt128` (fusion 128) | 2,84 s | ~10,5 min | ~5 h 20 |
+| `dinov3-dpt` (fusion 256) | 3,55 s | ~12,9 min | ~6 h 30 |
+
+Le forward du backbone gele est identique dans les trois cas : tout l'ecart est
+le cout de la tete et de son backward.
 
 ### Laisser tourner la nuit
 
@@ -164,7 +194,8 @@ python -m scripts.hf_sync push      # apres
 
 `--dry-run` montre le plan sans rien transferer. `--no-weights` laisse les
 checkpoints au sol quand seules les courbes doivent voyager (un `.pt` de U-Net
-pese 160 Mo, celui de dinov3 en pese 9). `--delete` elague la destination, a
+pese 160 Mo, celui de dinov3-dpt 123 Mo, celui de dinov3 9 Mo — un checkpoint ne
+contient que la tete, jamais le backbone gele). `--delete` elague la destination, a
 n'utiliser qu'apres un `--dry-run`.
 
 Le script pose toujours `--ignore-times`, et ce n'est pas un detail : le bucket
@@ -244,7 +275,7 @@ scripts/
 ├── models/
 │   ├── base.py      SegModel : le contrat que respecte toute architecture
 │   ├── __init__.py  registre, import differe des dependances
-│   ├── dinov3.py    ViT-L/16 SAT-493M gele + tete conv
+│   ├── dinov3.py    ViT-L/16 SAT-493M gele + tete conv ou tete DPT
 │   └── unet.py      U-Net a encodeur ResNet (34, 50, ...)
 ├── train.py         point d'entree unique  --model
 ├── evaluate.py      point d'entree unique  --model
@@ -309,6 +340,7 @@ defaut utilisable tel quel :
 Un backbone gele redefinit les deux derniers, pour ne pas ecrire des centaines
 de mega-octets de poids figes a chaque epoque : `dinov3.py` en donne l'exemple.
 
-Un U-Net a encodeur ResNet50 est deja declare (`--model unet-resnet50`) : il
-reutilise `models/unet.py` avec un autre encodeur, sans une ligne de code
-supplementaire.
+Deux entrees du registre illustrent le motif sans avoir coute de module :
+`--model unet-resnet50` reutilise `models/unet.py` avec un autre encodeur, et
+`--model dinov3-dpt` reutilise `models/dinov3.py` avec une autre tete. Ni l'une
+ni l'autre n'a demande une ligne hors de son module.

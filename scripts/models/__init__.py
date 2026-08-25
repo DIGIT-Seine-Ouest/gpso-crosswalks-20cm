@@ -10,9 +10,10 @@ Ajouter une architecture demande deux choses, et rien d'autre dans le depot :
      fonction build(**kwargs) qui renvoie une instance de base.SegModel ;
   2. une ligne dans _REGISTRY ci-dessous.
 
-Un ResNet50 est deja declare : il reutilise models/unet.py avec un autre
-encodeur, sans une ligne de code supplementaire. train.py, evaluate.py et
-visualize.py n'ont a etre touches dans aucun des deux cas.
+Deux entrees illustrent le motif : un ResNet50 qui reutilise models/unet.py
+avec un autre encodeur, et dinov3-dpt qui reutilise models/dinov3.py avec une
+autre tete. Aucune n'a coute une ligne de code hors de son module, et ni
+train.py, ni evaluate.py, ni visualize.py n'ont eu a etre touches.
 """
 import importlib
 
@@ -20,7 +21,9 @@ from .base import SegModel
 
 #: nom passe a --model -> (module qui l'implemente, arguments figes du build)
 _REGISTRY = {
-    "dinov3": ("scripts.models.dinov3", {}),
+    "dinov3": ("scripts.models.dinov3", {"head": "conv"}),
+    "dinov3-dpt": ("scripts.models.dinov3", {"head": "dpt"}),
+    "dinov3-dpt128": ("scripts.models.dinov3", {"head": "dpt", "features": 128}),
     "unet-resnet34": ("scripts.models.unet", {"encoder": "resnet34"}),
     "unet-resnet50": ("scripts.models.unet", {"encoder": "resnet50"}),
 }
