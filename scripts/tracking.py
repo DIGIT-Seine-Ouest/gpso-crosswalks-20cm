@@ -91,6 +91,41 @@ def aplatir(obj, prefixe=""):
     return plat
 
 
+# ----------------------------------------------------------------- modeles
+#: definition du modele pyfunc, declaree dans un fichier a part (cf. ce module)
+PYFUNC = os.path.join(config.REPO, "scripts", "pyfunc_model.py")
+
+
+def log_model(tracker, checkpoint, nom_enregistre=None):
+    """Attache le checkpoint au run et l'inscrit au registre de modeles.
+
+    Sans cet appel, l'onglet Models de MLflow reste vide : consigner un artefact
+    ne suffit pas, le registre demande un modele declare. Comme le reste du
+    module, l'echec ne remonte jamais jusqu'a l'appelant.
+    """
+    if not tracker.actif or not checkpoint or not os.path.exists(checkpoint):
+        return None
+    try:
+        import mlflow
+
+        info = mlflow.pyfunc.log_model(
+            name="model",
+            python_model=PYFUNC,
+            artifacts={"checkpoint": checkpoint},
+            code_paths=[os.path.join(config.REPO, "scripts")],
+            registered_model_name=nom_enregistre,
+            pip_requirements=["torch", "transformers", "numpy", "pillow"],
+        )
+        print(f"[track] modele enregistre : {nom_enregistre or 'model'} "
+              f"({os.path.getsize(checkpoint) / 1e6:.1f} Mo) -> {info.model_uri}",
+              flush=True)
+        return info.model_uri
+    except Exception as e:
+        print(f"[track] enregistrement du modele impossible : "
+              f"{type(e).__name__} {e}", flush=True)
+        return None
+
+
 # --------------------------------------------------------------------- backends
 class Muet:
     """Backend par defaut : accepte tout, n'enregistre rien, ne leve rien."""

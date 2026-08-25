@@ -194,8 +194,11 @@ def parse_args(argv=None):
     ap.add_argument("--run-name", default=None,
                     help="defaut : {modele}_{recette}_seed{graine}")
     ap.add_argument("--log-checkpoint", action="store_true",
-                    help="joint le checkpoint aux artefacts du run ; leger pour "
-                         "dinov3 (tete seule), lourd pour un U-Net entier")
+                    help="joint le checkpoint brut aux artefacts du run, en plus "
+                         "du modele enregistre")
+    ap.add_argument("--no-register", action="store_true",
+                    help="n'inscrit pas le modele au registre MLflow ; par defaut "
+                         "chaque run y depose son meilleur checkpoint")
     return ap.parse_args(argv)
 
 
@@ -346,6 +349,12 @@ def main(argv=None):
             track.log_artifact(args.history)
             if args.log_checkpoint:
                 track.log_artifact(args.out)
+            # Le registre demande un modele declare : un artefact seul laisse
+            # l'onglet Models vide. On y inscrit le meilleur checkpoint, celui
+            # choisi sur le volet val.
+            if not args.no_register:
+                tracking.log_model(track, args.out,
+                                   nom_enregistre=f"gpso-{args.model}")
         track.finish(statut)
 
     if not hist:
