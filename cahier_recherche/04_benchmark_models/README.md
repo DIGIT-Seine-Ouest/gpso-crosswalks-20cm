@@ -1,6 +1,6 @@
 # Benchmark des architectures sur données spatialement étanches
 
-> ⚠️ **DRAFT** — document de travail du 25 août 2026. Seule la partie **DINOv3** repose sur un run achevé. La colonne U-Net ResNet34 est vide : son entraînement sous le protocole commun **n'a pas encore été lancé**. Aucun chiffre ne doit être cité hors du dépôt tant que ce bandeau est présent.
+> ⚠️ **DRAFT** — document de travail du 25 août 2026. Les **deux architectures** reposent désormais sur un run achevé sous le protocole commun, **avec une seule graine chacune**. Le volet test n'a jamais été ouvert. Aucun chiffre ne doit être cité hors du dépôt tant que ce bandeau est présent.
 
 ---
 
@@ -49,20 +49,25 @@ Volet de validation : 88 tuiles de Meudon-sur-Seine, 189 occurrences d'objets, s
 
 | Métrique (volet val) | **DINOv3 ViT-L/16 gelé** | **U-Net ResNet34** | Rappel du pilote (fuité) |
 |---|---|---|---|
-| **IoU passage piéton** | **0,6384** | _à compléter — entraînement non lancé_ | 0,7252 / 0,6634 |
-| IC 95 % de l'IoU | [0,6127 – 0,6637] | _à compléter_ | [0,7087 – 0,7397] / [0,6377 – 0,6845] |
-| Dice / F1-pixel | 0,7793 | _à compléter_ | 0,8407 / 0,7976 |
-| Précision pixel | 0,7487 | _à compléter_ | 0,8083 / 0,7908 |
-| Rappel pixel | 0,8125 | _à compléter_ | 0,8759 / 0,8045 |
-| **Détection d'objet (> 50 %)** | **87,3 %** (165/189) | _à compléter_ | 88,1 % / 79,5 % |
-| IoU avec TTA D4 | 0,6579 | _à compléter_ | 0,7404 / 0,6981 |
-| Détection d'objet avec TTA D4 | 85,7 % (162/189) | _à compléter_ | — |
-| Paramètres entraînés | 2,36 M (backbone gelé 304 M) | 41,1 M *(pilote ArcGIS)* | — |
-| Époque retenue sur val | 18 / 30 | _à compléter_ | — |
-| Durée du run | ~3 h 54 (30 époques, `mps`) | _à compléter_ | — |
-| Graines exécutées | 1 (seed 0) | _à compléter_ | 1 |
+| **IoU passage piéton** | 0,6384 | **0,7459** | 0,7252 / 0,6634 |
+| IC 95 % de l'IoU | [0,6127 – 0,6637] | **[0,7118 – 0,7743]** | [0,7087 – 0,7397] / [0,6377 – 0,6845] |
+| Dice / F1-pixel | 0,7793 | **0,8545** | 0,8407 / 0,7976 |
+| Précision pixel | 0,7487 | **0,8685** | 0,8083 / 0,7908 |
+| Rappel pixel | 0,8125 | **0,8408** | 0,8759 / 0,8045 |
+| **Détection d'objet (> 50 %)** | 87,3 % (165/189) | **92,6 %** (175/189) | 88,1 % / 79,5 % |
+| Objets pleins manqués | 7 sur 24 manques | **0 sur 14 manques** | — |
+| Pixels erronés « loin » | 24 596 (43,8 %) | **11 044 (31,6 %)** | — |
+| IoU avec TTA D4 | 0,6579 | 0,7434 *(dégrade)* | 0,7404 / 0,6981 |
+| Détection d'objet avec TTA D4 | 85,7 % (162/189) | 91,0 % (172/189) | — |
+| Régime d'entraînement | backbone **gelé** | **fine-tuning complet** | — |
+| Paramètres entraînés | 2,36 M (backbone gelé 304 M) | 41,22 M | — |
+| Époque retenue sur val | 18 / 30 | 20 / 30 | — |
+| Durée du run | ~3 h 54 (30 époques, `mps`) | ~2 h 55 (30 époques, `mps`) | — |
+| Graines exécutées | 1 (seed 0) | 1 (seed 0) | 1 |
 | **Erreur de centroïde (< 1,5 m)** | _non mesurée_ | _non mesurée_ | _non mesurée_ |
 | **Erreur de comptage (MAE)** | _non mesurée_ | _non mesurée_ | _non mesurée_ |
+
+> ⚖️ **Les deux colonnes ne comparent pas des régimes équivalents.** DINOv3 tourne gelé (2,36 M paramètres appris), le U-Net en fine-tuning complet (41,22 M). Chacun est dans le régime pour lequel son architecture est conçue — c'est la comparaison qui répond à la question de déploiement — mais la conclusion défendable reste **« U-Net en fine-tuning complet > DINOv3 gelé »**, et non « U-Net > DINOv3 ». L'ablation `--freeze-encoder` trancherait la part du régime.
 
 > Les deux dernières lignes sont les métriques cardinales du [cadrage](../01_cadrage_et_metriques/01_importance_des_metriques.md). **Aucune architecture n'a encore de chiffre dessus** : elles supposent le recollage des prédictions en Lambert-93 et la vectorisation ponctuelle, qui restent à écrire. Le benchmark actuel se juge donc sur des métriques intermédiaires.
 
@@ -92,14 +97,17 @@ Détail notable, et à confirmer : la métrique métier a bien moins bougé que 
 
 | Chapitre | Architecture | État |
 |---|---|---|
-| [`01_bilan_dinov3.md`](01_bilan_dinov3.md) | **DINOv3 ViT-L/16 SAT-493M gelé + tête conv** | ✅ Run achevé (seed 0), bilan rédigé — DRAFT |
-| `02_bilan_unet_resnet34.md` | **U-Net ResNet34 (recette `protocole`)** | ⏳ **À compléter — entraînement non lancé.** Le fichier sera créé quand `datasets/runs/unet-resnet34/` contiendra un historique et un rapport d'évaluation. |
+| [`01_bilan_dinov3.md`](01_bilan_dinov3.md) | **DINOv3 ViT-L/16 SAT-493M gelé + tête conv** | ✅ Run achevé (seed 0) — DRAFT |
+| [`02_bilan_unet_resnet34.md`](02_bilan_unet_resnet34.md) | **U-Net ResNet34, fine-tuning complet** | ✅ Run achevé (seed 0) — DRAFT |
+
+Match qualitatif des deux modèles, tuile par tuile : [`comparatif_dinov3_vs_unet-resnet34_val.html`](../../datasets/runs/comparatif_dinov3_vs_unet-resnet34_val.html).
 
 ---
 
 ## 🔜 Ce qui manque pour que ce dossier devienne un verdict
 
-1. **L'entraînement U-Net ResNet34 sous la recette `protocole`.** Sans lui, il n'y a pas de benchmark, seulement un bilan de run. Les poids ArcGIS de la Phase 1 ne peuvent pas tenir ce rôle : ils ont été entraînés sur un découpage aléatoire inconnu.
-2. **La dispersion multi-seed.** Une seule graine par architecture ne permet pas de dire si un écart entre deux modèles dépasse le bruit d'initialisation. Trois graines sont prévues (`--seed 0 1 2`).
+1. **La dispersion multi-seed.** Une seule graine par architecture ne permet pas de dire si un écart dépasse le bruit d'initialisation. Trois graines sont prévues (`--seed 0 1 2`). Priorité haute côté U-Net, dont le pic (époque 20) est mal séparé de son plateau (époque 8).
+2. **L'ablation `--freeze-encoder`** sur le U-Net : encodeur gelé, seul le décodeur apprend. C'est le régime de DINOv3 appliqué au U-Net, et c'est ce qui dira quelle part des 16,8 % vient du régime d'entraînement plutôt que de l'architecture. Un flag, un run.
 3. **Le recollage en Lambert-93 et la vectorisation ponctuelle**, qui seuls donneront un comptage par objet réel, une erreur de centroïde et une MAE de comptage.
-4. **L'ouverture du volet test**, une seule fois, une fois les trois points ci-dessus traités.
+4. **L'arbitrage des décomptes d'objets du volet val** — 189 occurrences par tuile, 55 passages distincts après recollage, 106 dans les métadonnées ArcGIS. À trancher avant toute citation externe du taux de détection.
+5. **L'ouverture du volet test**, une seule fois, une fois les points ci-dessus traités.
